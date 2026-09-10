@@ -14,7 +14,12 @@ shader backdrop + the overview lamp panel are **MIT community components from
 > `three` / `@react-three/fiber` / `@react-three/postprocessing` (the particle core) —
 > all MIT-licensed.
 
-## Demo
+## Live demo
+
+**[apex-ui-xi.vercel.app](https://apex-ui-xi.vercel.app)** - the same code, running.
+Tap the orb.
+
+## Run it yourself
 
 ```bash
 npm install
