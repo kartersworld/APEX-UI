@@ -10,6 +10,10 @@ small `react-three-fiber` scene (skipped under `prefers-reduced-motion`); and th
 shader backdrop + the overview lamp panel are **MIT community components from
 [21st.dev](https://21st.dev/community/components)** (see [CREDITS](./CREDITS.md)).
 
+> ⚠ **The Apex Humanoid is NOT part of this repo.** The particle-figure face of Apex
+> (assembly, states, voice-driven energy) lives in a separate repository with its own
+> access - what you see here is the orb + reasoning-graph interface only.
+
 > Built with Next.js 15 + React 19. Runtime deps: `lucide-react` (icons) and
 > `three` / `@react-three/fiber` / `@react-three/postprocessing` (the particle core) —
 > all MIT-licensed.
