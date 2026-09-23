@@ -33,11 +33,25 @@ function Waveform({ active, cx, cy, width = 200 }) {
   )
 }
 
+// Phase 6: `state` is now the real JarvisState (8 values), not the old
+// 3-value idle/thinking/speaking demo cycle — this is the label mapping for
+// all eight, replacing the old inline ternary.
+const LABEL = {
+  idle: 'STANDBY',
+  listening: 'LISTENING',
+  thinking: 'PROCESSING',
+  researching: 'RESEARCHING',
+  acting: 'ACTING',
+  speaking: 'SPEAKING',
+  complete: 'COMPLETE',
+  error: 'ERROR',
+}
+
 export default function OrbStatusBar({ state = 'idle' }) {
   const W = 420, H = 130
   const cx = W / 2, cy = 48
   const isActive = state !== 'idle'
-  const label = state === 'listening' ? 'LISTENING' : state === 'speaking' ? 'SPEAKING' : state === 'thinking' ? 'PROCESSING' : 'STANDBY'
+  const label = LABEL[state] || 'STANDBY'
 
   return (
     <div style={{

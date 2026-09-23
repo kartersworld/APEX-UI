@@ -1,7 +1,7 @@
 {
-  "name": "apex-ui",
+  "name": "karters-dashboard",
   "version": "1.0.0",
-  "description": "An animated autonomous-agent orb + reasoning-graph UI. Hand-written SVG/CSS, no 3D libraries.",
+  "description": "Karters Dashboard — a futuristic AI command center built around JARVIS.",
   "license": "MIT",
   "private": false,
   "scripts": {

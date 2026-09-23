@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from 'react'
+import { AGENT_IDS, AGENT_REGISTRY } from './jarvis/agentRegistry'
 
 // Apex's reasoning web — the lean-orchestrator brain. Two modes:
 //   mode="full"  → the whole circuit-brain constellation (front / overview). Orbit rings + PCB
@@ -14,6 +15,11 @@ import { useEffect, useRef } from 'react'
 //
 // Aesthetic (ref: navy AI-brain): thin lines, small cyan particles, structured-chaos glow.
 // Pure SVG + rAF, built imperatively; decorative (pointer-events none).
+//
+// Phase 5: node geometry/labels/layer now come from components/jarvis/agentRegistry.ts
+// (the canonical registry) instead of a local ROSTER — this file no longer owns agent
+// data, only how to render it. Values are unchanged from the original local ROSTER, so
+// the rendered layout is byte-identical to before this refactor.
 
 // Site adaptation: `roster`, `anchor` and `viewBox` are optional overrides so a
 // caller can re-arrange the constellation (the pitch deck parks Apex to one side
@@ -22,30 +28,16 @@ import { useEffect, useRef } from 'react'
 const NS = 'http://www.w3.org/2000/svg'
 const AX_DEFAULT = 340, AY_DEFAULT = 240   // exact viewBox centre = the orb's world-origin anchor (where the 3D particle
                            // ball is centred), so the spoke hub originates from the particle cluster's centre
+                           // — the LOCAL fallback; Phase 5's `anchor` prop, when supplied by ApexWorld's
+                           // projected-core-position bridge, supersedes this.
 const COL = { consultant: '#00e5ff', doer: '#f5a623', tool: '#7f9bb3' }
 
-// Right side re-spaced into a clean vertical ladder (drive→finance→editor→memory→email→design)
-// so no label collides with a neighbouring circle. Left/bottom unchanged.
-const ROSTER = [
-  ['chief_of_staff', 'Chief of staff', 'consultant', 250, 212, true, 18, 9],
-  ['memory', 'Memory', 'consultant', 452, 250, true, -18, 8],
-  ['strategist', 'Strategist', 'consultant', 296, 118, true, -22, 6.5],
-  ['researcher', 'Researcher', 'consultant', 182, 150, true, 24, 6.5],
-  ['finance', 'Finance', 'consultant', 436, 148, true, -20, 6.5],
-  ['editor', 'Editor', 'consultant', 584, 208, true, -26, 6.5],
-  ['sales', 'Sales', 'doer', 158, 266, true, 22, 6.5],
-  ['marketing', 'Marketing', 'doer', 195, 298, true, 22, 6.5],
-  ['ops', 'Ops', 'doer', 232, 330, true, 20, 6.5],
-  ['social_media', 'Social', 'doer', 330, 374, true, -16, 6.5],
-  ['engineering', 'Engineering', 'doer', 426, 350, true, -18, 6.5],
-  ['design', 'Design', 'doer', 502, 312, true, -22, 6.5],
-  ['developer', 'Developer', 'doer', 118, 356, false, 26, 6],
-  ['analytics', 'Analytics', 'tool', 256, 388, false, 20, 5.5],
-  ['crm', 'CRM', 'tool', 414, 392, true, -18, 5.5],
-  ['calendar', 'Calendar', 'tool', 560, 356, true, -24, 5.5],
-  ['email', 'Email', 'tool', 608, 286, false, -26, 5.5],
-  ['drive', 'Drive', 'tool', 582, 132, false, 24, 5.5],
-]
+// Registry → the same positional-tuple shape this file's rendering logic already
+// expects, in the registry's canonical (== original ROSTER) order.
+const ROSTER = AGENT_IDS.map((id) => {
+  const a = AGENT_REGISTRY[id]
+  return [a.id, a.label, a.layer, a.x, a.y, a.live, a.bend, a.r]
+})
 const META = {}; ROSTER.forEach((r) => { META[r[0]] = { label: r[1], col: COL[r[2]] } })
 
 const LEVEL = { standby: 0.32, listening: 0.6, processing: 0.85, reasoning: 0.95, speaking: 0.78 }
@@ -55,12 +47,16 @@ function nodeIdFromHelper(h) {
   return ({ create_visual: 'design', render_visual: 'design', visual: 'design' })[s] || s   // a visual lights Design
 }
 
-export default function ReasoningWeb({ state = 'standby', trace = null, mode = 'full', coreless = false, onSelect = null, light = false, roster = null, anchor = null, viewBox = null, traces = true }) {
+export default function ReasoningWeb({ state = 'standby', trace = null, mode = 'full', coreless = false, onSelect = null, light = false, roster = null, anchor = null, viewBox = null, traces = true, activity = null }) {
   const svgRef = useRef(null)
   const apiRef = useRef(null)
   const stateRef = useRef(state)
   stateRef.current = state
   const onSelectRef = useRef(onSelect); onSelectRef.current = onSelect   // click a node → open its cockpit
+  // Phase 5: previous `activity` snapshot, diffed below to trigger the right
+  // one-shot animation (burst/pulse) exactly once per real transition rather
+  // than re-triggering every render.
+  const prevActivityRef = useRef(null)
 
   useEffect(() => {
     const svg = svgRef.current
@@ -100,9 +96,11 @@ export default function ReasoningWeb({ state = 'standby', trace = null, mode = '
     // ── shared particle system — small cyan particles flowing a spoke ──
     const live = []
     let allNodes = []           // full-mode roster, for per-node pulsing
-    const spawn = (spoke, faint) => {
+    // Phase 5: `reverse` samples the SAME measured path backwards (node→core
+    // instead of core→node) — no new geometry, just which end pr=0 starts at.
+    const spawn = (spoke, faint, reverse = false) => {
       const el = mk('circle', { r: faint ? 0.9 : 1.4, fill: faint ? P.mote : P.moteHot, filter: 'url(#rw-glow)' })
-      pulsesG.append(el); live.push({ el, born: performance.now(), spoke, L: spoke.getTotalLength(), faint })
+      pulsesG.append(el); live.push({ el, born: performance.now(), spoke, L: spoke.getTotalLength(), faint, reverse })
     }
 
     // ── Apex core (unless layered over the 3D orb) ──
@@ -188,23 +186,53 @@ export default function ReasoningWeb({ state = 'standby', trace = null, mode = '
         hit.addEventListener('click', () => onSelectRef.current && onSelectRef.current({ name: n.label, key: n.id, color: n.col }))
         nodesG.append(hit)
       })
+      // Phase 5: the single-node burst extracted from `fire`'s per-id body,
+      // unchanged in timing/behavior, now parameterized by direction so it
+      // can serve both the original outbound-only `fire(ids)` and the new
+      // activateAgent/returnAgent API. `reverse` only changes which end of
+      // the SAME measured path (n.spoke) particles start from — see spawn().
+      const burstOne = (n, { reverse = false } = {}) => {
+        if (!n) return
+        n._bursting = true // pauses the per-frame loop's working/error stroke-width writes until this settles
+        n.spoke.setAttribute('stroke', P.spokeHot); n.spoke.setAttribute('stroke-width', 1.6)
+        n.spoke.setAttribute('opacity', 0.7)
+        n._until = performance.now() + 1150
+        const stream = () => { if (performance.now() < n._until) { spawn(n.spoke, false, reverse); setTimeout(stream, 105) } }
+        stream()
+        setTimeout(() => { n.circ.setAttribute('filter', 'url(#rw-glow)'); n.circ.setAttribute('r', (n.live ? n.r : 5.5) + 3); n.circ.setAttribute('stroke-width', n.live ? 3 : 2); n.circ.setAttribute('opacity', 1) }, 560)
+        setTimeout(() => {
+          n._bursting = false
+          n.spoke.setAttribute('stroke', P.spoke); n.spoke.setAttribute('stroke-width', 1)
+          n.spoke.setAttribute('opacity', n.live ? 0.78 : 0.4)
+          n.circ.removeAttribute('filter')
+          // Phase 5: land back on the WORKING look if the agent is still
+          // marked working (persistent state), not necessarily the resting
+          // look — otherwise a burst mid-work would visibly "reset" the node.
+          const restR = n.working ? (n.live ? n.r : 5.5) + 1.5 : (n.live ? n.r : 5.5)
+          const restSW = n.working ? (n.live ? 2.6 : 1.8) : (n.live ? 2 : 1.3)
+          n.circ.setAttribute('r', restR); n.circ.setAttribute('stroke-width', restSW); n.circ.setAttribute('opacity', n.live ? 1 : 0.6)
+        }, 2050)
+      }
+
+      // Phase 5: brief, restrained completion acknowledgement — one ring
+      // pulse (reusing the SAME glow step as burstOne, no new visual
+      // vocabulary), then flags clear so the per-frame loop below settles
+      // the node back toward its plain idle breathing.
+      const pulseComplete = (n) => {
+        if (!n) return
+        n.circ.setAttribute('filter', 'url(#rw-glow)')
+        n.circ.setAttribute('r', (n.live ? n.r : 5.5) + 2.5)
+        n.circ.setAttribute('stroke-width', n.live ? 2.6 : 1.8)
+        setTimeout(() => {
+          n.working = false; n.errorFlag = false
+          n.circ.removeAttribute('filter')
+          n.circ.setAttribute('r', n.live ? n.r : 5.5)
+          n.circ.setAttribute('stroke-width', n.live ? 2 : 1.3)
+        }, 900)
+      }
+
       fire = (ids) => {
-        ids.forEach((id, k) => {
-          const n = map[id]; if (!n) return
-          setTimeout(() => {
-            n.spoke.setAttribute('stroke', P.spokeHot); n.spoke.setAttribute('stroke-width', 1.6)
-            n.spoke.setAttribute('opacity', 0.7)
-            n._until = performance.now() + 1150
-            const stream = () => { if (performance.now() < n._until) { spawn(n.spoke, false); setTimeout(stream, 105) } }
-            stream()
-            setTimeout(() => { n.circ.setAttribute('filter', 'url(#rw-glow)'); n.circ.setAttribute('r', (n.live ? n.r : 5.5) + 3); n.circ.setAttribute('stroke-width', n.live ? 3 : 2); n.circ.setAttribute('opacity', 1) }, 560)
-            setTimeout(() => {
-              n.spoke.setAttribute('stroke', P.spoke); n.spoke.setAttribute('stroke-width', 1)
-              n.spoke.setAttribute('opacity', n.live ? 0.78 : 0.4)
-              n.circ.removeAttribute('filter'); n.circ.setAttribute('r', n.live ? n.r : 5.5); n.circ.setAttribute('stroke-width', n.live ? 2 : 1.3); n.circ.setAttribute('opacity', n.live ? 1 : 0.6)
-            }, 2050)
-          }, k * 210)
-        })
+        ids.forEach((id, k) => { setTimeout(() => burstOne(map[id]), k * 210) })
         // connections between co-active agents — a transient link so multiple agents working the same turn
         // READ as collaborating (not just Apex→each). Auto-removed after ~2.4s.
         const co = ids.map((id) => map[id]).filter(Boolean)
@@ -221,7 +249,17 @@ export default function ReasoningWeb({ state = 'standby', trace = null, mode = '
         }
       }
       allNodes = pts
-      apiRef.current = { fire, liveNodes: pts.filter((p) => p.live), allSpokes: pts.map((p) => p.spoke) }
+      apiRef.current = {
+        fire, // unchanged — existing callers (the `trace` prop path) keep working exactly as before
+        // Phase 5 additions — the new activity-driven API:
+        activateAgent: (id) => burstOne(map[id], { reverse: false }),  // outbound JARVIS → Agent
+        returnAgent: (id) => burstOne(map[id], { reverse: true }),     // inbound Agent → JARVIS
+        setWorking: (id, on) => { const n = map[id]; if (n) n.working = !!on },
+        setErrorFlag: (id, on) => { const n = map[id]; if (n) n.errorFlag = !!on },
+        completeAgent: (id) => pulseComplete(map[id]),
+        resetAgent: (id) => { const n = map[id]; if (n) { n.working = false; n.errorFlag = false } },
+        liveNodes: pts.filter((p) => p.live), allSpokes: pts.map((p) => p.spoke),
+      }
     } else {
       // mini — calm core, on-demand bloom.
       ;[34, 64].forEach((r) => ringsG.append(mk('circle', { cx: AX, cy: AY, r, fill: 'none', stroke: P.ring, opacity: 0.3, 'stroke-width': 1, 'stroke-dasharray': '1 7' })))
@@ -274,11 +312,28 @@ export default function ReasoningWeb({ state = 'standby', trace = null, mode = '
         ring.setAttribute('r', 18 + 2.4 * k); ring.setAttribute('opacity', (0.4 + 0.25 * lvl) + 0.18 * k)
       }
       // Every node breathes on its OWN phase (ordered chaos — never all at once).
+      // Phase 5: `n.working`/`n.errorFlag` are plain flags toggled by the new
+      // activity API (setWorking/setErrorFlag) — read here, in the SAME
+      // existing per-frame loop, so a persistent "working" or "error" look
+      // costs nothing beyond what was already running (no new rAF loop, no
+      // continuous particle stream for a resting working agent).
       for (let i = 0; i < allNodes.length; i++) {
         const n = allNodes[i]; if (!n.halo) continue
-        const kk = (Math.sin(phase * 0.85 + n.phase) + 1) / 2
-        n.halo.setAttribute('opacity', (n.live ? 0.16 : 0.09) + (n.live ? 0.30 : 0.18) * kk)
-        n.halo.setAttribute('r', n.haloR + 2 * kk)
+        // Error nodes get a slightly irregular phase (a second, faster,
+        // differently-seeded wave folded in) instead of a color change —
+        // "disturbed" reads through irregularity, staying inside the
+        // existing palette rather than introducing an alarm color.
+        const errJitter = n.errorFlag ? Math.sin(phase * 2.3 + n.phase * 1.7) * 0.5 : 0
+        const kk = (Math.sin(phase * 0.85 + n.phase) + 1) / 2 + errJitter * 0.18
+        const workBoost = n.working ? 1 : 0
+        n.halo.setAttribute('opacity', (n.live ? 0.16 : 0.09) + (n.live ? 0.30 : 0.18) * kk + workBoost * 0.2)
+        n.halo.setAttribute('r', n.haloR + 2 * kk + workBoost * 1.4)
+        if (n.circ && (n.working || n.errorFlag) && !n._bursting) {
+          // Only touch stroke-width here when NOT mid-burst (burstOne owns
+          // it during a burst and restores the working-aware rest value
+          // itself) — avoids two writers fighting the same attribute.
+          n.circ.setAttribute('stroke-width', n.live ? 2.6 : 1.8)
+        }
       }
       // Ambient "thinking" — a constant gentle drift of faint motes from the core out to ALL parts.
       // Denser + faster when Apex is awake (two at a time), so the whole web feels alive.
@@ -291,7 +346,7 @@ export default function ReasoningWeb({ state = 'standby', trace = null, mode = '
       for (let i = live.length - 1; i >= 0; i--) {
         const p = live[i], pr = (t - p.born) / 620
         if (pr >= 1) { p.el.remove(); live.splice(i, 1); continue }
-        const q = p.spoke.getPointAtLength(pr * p.L)
+        const q = p.spoke.getPointAtLength((p.reverse ? (1 - pr) : pr) * p.L)
         p.el.setAttribute('cx', q.x); p.el.setAttribute('cy', q.y)
         p.el.setAttribute('opacity', (p.faint ? 0.4 : 0.9) * Math.sin(pr * Math.PI))
       }
@@ -306,6 +361,53 @@ export default function ReasoningWeb({ state = 'standby', trace = null, mode = '
     const ids = (trace.trace || []).map((h) => nodeIdFromHelper(h.helper)).filter((id) => META[id])
     if (ids.length) apiRef.current.fire(ids)
   }, [trace?.n])
+
+  // Phase 5: the new activity-driven path. `activity` is a plain
+  // Record<AgentId, {status, since}> (see useAgentActivityController) —
+  // this diffs it against the previous snapshot and triggers exactly one
+  // imperative call per REAL transition, so re-renders that don't change
+  // any status are no-ops. This is the only place that translates activity
+  // STATE into ReasoningWeb visuals — callers (manual clicks, future
+  // backend events) only ever change the data, never call these methods
+  // directly.
+  useEffect(() => {
+    if (!activity || !apiRef.current) return
+    const api = apiRef.current
+    const prev = prevActivityRef.current || {}
+    for (const id in activity) {
+      const status = activity[id]?.status
+      const prevStatus = prev[id]?.status
+      if (status === prevStatus) continue
+      switch (status) {
+        case 'activating':
+          api.activateAgent(id)
+          break
+        case 'working':
+          // Only burst on ENTRY to working from a non-active state — if we
+          // just came from 'activating' the outbound burst already played,
+          // so this would otherwise double-fire.
+          if (prevStatus !== 'activating') api.activateAgent(id)
+          api.setWorking(id, true)
+          break
+        case 'returning':
+          api.setWorking(id, false)
+          api.returnAgent(id)
+          break
+        case 'complete':
+          api.completeAgent(id)
+          break
+        case 'error':
+          api.setWorking(id, false)
+          api.setErrorFlag(id, true)
+          break
+        case 'idle':
+        default:
+          api.resetAgent(id)
+          break
+      }
+    }
+    prevActivityRef.current = activity
+  }, [activity])
 
   return (
     <>

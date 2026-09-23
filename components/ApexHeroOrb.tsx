@@ -2,11 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import ApexOrb from "./ApexOrb";
 import "./apex-orb.css";
+import type { JarvisController } from "./jarvis/useJarvisController";
 
 // three/fiber must never SSR
-const ApexCore3D = dynamic(() => import("./ApexCore3D"), { ssr: false });
+const JarvisCore3D = dynamic(() => import("./JarvisCore3D"), { ssr: false });
 
 // Stage matches the Apex app's on-screen proportions: the ring renders at its
 // natural 900×520 and the particle canvas gets ~900px of height, so the awake
@@ -15,18 +15,36 @@ const ApexCore3D = dynamic(() => import("./ApexCore3D"), { ssr: false });
 const STAGE_W = 900;
 const STAGE_H = 900;
 
-export type OrbState = "idle" | "thinking" | "speaking";
-
-export default function ApexHeroOrb({ state: controlled, onStateChange, interactive = true }: { state?: OrbState; onStateChange?: (s: OrbState) => void; interactive?: boolean } = {}) {
+export default function ApexHeroOrb({
+  jarvis,
+  onCoreScreenPosition,
+}: {
+  // Phase 6: the ONE authoritative JarvisState source, owned by ApexWorld and
+  // passed down as data — this component no longer instantiates its own
+  // controller (it used to, as a second, parallel instance never consumed by
+  // anything outside JarvisCore3D; that duplication is exactly what Phase 6
+  // retires). ApexHeroOrb only ever renders what it's told.
+  jarvis: JarvisController;
+  // Phase 5: reports the JARVIS core's true screen-space center (viewport/
+  // client coordinates), whenever it's known/changes. This is a plain DOM
+  // measurement, not a Three.js projection — JarvisCore3D's camera sits at
+  // a fixed [0,0,4.8] looking at a group that never itself translates (only
+  // rotates/deforms), so the core's projected origin is ALWAYS exactly the
+  // geometric center of its own <Canvas>, which fills this component's own
+  // root box (`boxRef`) edge-to-edge. Measuring boxRef's center is therefore
+  // equivalent to projecting the 3D origin through the camera, with zero
+  // Three.js/JarvisCore3D coupling required.
+  onCoreScreenPosition?: (pos: { x: number; y: number }) => void;
+}) {
   const boxRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(0.6);
-  const [inner, setInner] = useState<OrbState>("idle");
-  const state = controlled ?? inner;
   const [reducedMotion, setReducedMotion] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const update = (s: OrbState) => { setInner(s); onStateChange?.(s); };
+  // Ref, not a dependency — so the measure effect below can stay a
+  // mount-once effect regardless of whether the parent memoizes this prop.
+  const onCoreScreenPositionRef = useRef(onCoreScreenPosition);
+  onCoreScreenPositionRef.current = onCoreScreenPosition;
 
-  // Motion-sensitive users get the static golden ring without the particle sim.
+  // Motion-sensitive users get a static disc without the particle sim.
   useEffect(() => {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
     const apply = () => setReducedMotion(mq.matches);
@@ -44,39 +62,38 @@ export default function ApexHeroOrb({ state: controlled, onStateChange, interact
       // Visible art ≈ 520px tall / 560px wide (ring + waves) - fill the column
       // aggressively, up to 1.6× the natural size on large screens.
       setScale(Math.min(1.6, el.clientWidth / 560, el.clientHeight / 540));
+      // Phase 5: report the core's screen center alongside the scale
+      // measurement — same trigger (ResizeObserver), zero extra cost.
+      if (onCoreScreenPositionRef.current) {
+        const rect = el.getBoundingClientRect();
+        onCoreScreenPositionRef.current({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+      }
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    return () => ro.disconnect();
+    // ResizeObserver only fires when `el` itself changes SIZE — a pure
+    // reposition (ancestor layout shift with no size change) wouldn't
+    // trigger it, so also re-measure on window resize for the position
+    // report specifically. Cheap, low-frequency, matches the "resize
+    // resilience" requirement.
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
-
-  // Tap 1 → the core surges (expands, boils faster, bright sound-waves).
-  // Tap 2 → voice mode: the fast rippling waves the app shows while Apex speaks.
-  // Tap 3 (or 8s of no taps) → back to the slow idle boil.
-  const boost = () => {
-    const next: OrbState = state === "idle" ? "thinking" : state === "thinking" ? "speaking" : "idle";
-    update(next);
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => update("idle"), 8000);
-  };
-
   return (
+    // Phase 6: purely decorative here — the real click target is ApexWorld's
+    // own tap-disc (it sits above this at a higher z-index and already owns
+    // the interaction; this element never received real pointer events even
+    // before this refactor). No click handling lives in this component.
     <div
       ref={boxRef}
-      {...(interactive
-        ? {
-            onClick: boost,
-            onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); boost(); } },
-            onMouseDown: (e: React.MouseEvent) => e.preventDefault(), // clicks don't leave a focus ring; keyboard focus still shows
-            role: "button",
-            tabIndex: 0,
-            "aria-label": "Apex core - tap to energize",
-          }
-        : { "aria-hidden": true as const })}
-      style={{ position: "relative", width: "100%", height: "100%", cursor: interactive ? "pointer" : "default", pointerEvents: interactive ? "auto" : "none", borderRadius: "50%", userSelect: "none" }}
+      aria-hidden="true"
+      style={{ position: "relative", width: "100%", height: "100%", pointerEvents: "none", borderRadius: "50%", userSelect: "none" }}
     >
       <div
         data-apex-stage
@@ -89,13 +106,40 @@ export default function ApexHeroOrb({ state: controlled, onStateChange, interact
           transform: `translate(-50%, -50%) scale(${scale})`,
         }}
       >
-        {/* golden ring frame - same SVG as the app, label/equalizer hidden */}
-        <div style={{ position: "absolute", left: 0, top: (STAGE_H - 520) / 2, pointerEvents: "none" }}>
-          <ApexOrb state={state} variant="frame" onRingClick={undefined} />
-        </div>
-        {/* cyan particle core - contained to this stage instead of full-screen.
-            Skipped entirely under prefers-reduced-motion (static ring remains). */}
-        {!reducedMotion && <ApexCore3D state={state} variant="particles" contained onClick={undefined} />}
+        {/* Phase 2: the enclosing gold ring is retired from JARVIS's presentation
+            per spec (JARVIS has no halo) — ApexOrb.jsx itself is untouched and
+            still used nowhere else, confirmed by a full-repo grep before removal.
+            JARVIS particle core - contained to this stage instead of full-screen.
+            Phase 3/6: driven entirely by the `jarvis` prop (ApexWorld's single
+            controller instance); this component has no knowledge of JarvisState
+            semantics, only numbers/values it forwards. */}
+        {!reducedMotion && (
+          <JarvisCore3D
+            contained
+            params={jarvis.targetParams}
+            state={jarvis.state}
+            stateEnteredAt={jarvis.stateEnteredAt}
+            speechAmplitude={jarvis.speechAmplitude}
+          />
+        )}
+        {/* Reduced-motion fallback: a static (non-animated) disc in JARVIS's
+            own palette — no WebGL, no motion, just a fixed presence. */}
+        {reducedMotion && (
+          <div
+            aria-hidden="true"
+            style={{
+              position: "absolute",
+              left: "50%",
+              top: "50%",
+              width: 260,
+              height: 260,
+              transform: "translate(-50%, -50%)",
+              borderRadius: "50%",
+              background:
+                "radial-gradient(circle at 42% 38%, #5F4E7E 0%, #353267 62%, #241f47 100%)",
+            }}
+          />
+        )}
       </div>
     </div>
   );
