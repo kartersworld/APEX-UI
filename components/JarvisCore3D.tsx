@@ -302,7 +302,26 @@ export const DEFAULT_PARAMS: JarvisParams = {
   // top of the ramp's own color; the new darker ramp shows its true color
   // on front-facing particles without needing an extra lift).
   rearDarken: 0.045, // Checkpoint G, 3rd pass: 0.1→0.045 — rear/internal particles now approach true near-black, per the reference's dark interior
-  frontBoost: 1.0,
+  // Stage 4, production-luminosity pass — LOCKED, approved: 1.0→1.30.
+  // Isolated A/B testing (holding every other variable identical) proved
+  // frontBoost is the dominant lever for whole-Core visibility at true
+  // dashboard scale — at 1.0 the front-facing majority of the visible
+  // hemisphere (the surface that actually carries the "energized particle
+  // membrane" read) got no boost at all over its raw, deliberately
+  // dark-calibrated ramp color, so the Core read as barely-there at normal
+  // viewing size. rearDarken, particleSize, bloomIntensity, and bloomRadius
+  // were each tested in isolation and produced negligible-to-no change by
+  // comparison — do not revisit those for this problem. Final value chosen
+  // from a 5-candidate art-direction pass (1.18/1.22/1.26/1.30/1.34) judged
+  // at true dashboard scale, not close-up: 1.18/1.22 stayed too visually
+  // recessed for the Core's role as the dashboard's central object; 1.34
+  // started giving too much visual weight to the broad blue membrane itself;
+  // 1.30 was the chosen balance — enough presence to read the spherical
+  // shell/surface structure/depth clearly without the whole Core reading as
+  // uniformly bright. This is a LUMINOSITY/visibility value only — it does
+  // NOT mean the Core's energy composition matches Reference 1; that is a
+  // separate, still-open problem (see handoff doc).
+  frontBoost: 1.3,
 
   bloomEnabled: true,
   // Checkpoint G retune — bloom judged visually against the reference, not
