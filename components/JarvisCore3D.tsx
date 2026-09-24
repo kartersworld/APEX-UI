@@ -367,6 +367,85 @@ function buildFibonacciSphere(n: number) {
   return { dir, seed };
 }
 
+// Stage 4, distribution-artifact diagnostic (window.__jarvisRelaxedDist,
+// TEMP A/B candidate — NOT wired in by default): the base
+// buildFibonacciSphere() above places every particle at an EXACTLY regular
+// golden-angle position and never perturbs it — the only existing
+// per-particle variation (sizeJitter/vOpacityJitter, vertex shader) changes
+// how a particle is DRAWN, never WHERE it sits, so the perfectly regular
+// spiral spacing survives untouched underneath the render-time noise. That
+// regularity was always there; restoring frontBoost's production-scale
+// visibility just made it perceptible for the first time. This candidate
+// applies a small, DETERMINISTIC, TANGENT-PLANE-ONLY offset to each
+// particle's base direction before build (CPU-side, once, not per-frame —
+// so particle identity/position is exactly as stable as the unperturbed
+// version: no frame-to-frame crawl, no flicker), then renormalizes to put
+// the point back on the unit sphere. Because the offset is constructed
+// orthogonal to the particle's own normal, renormalizing pulls the point
+// back to the shell with only a second-order (O(jitter^2), negligible at
+// this magnitude) radial component — i.e. structurally almost pure
+// angular/tangential perturbation, no meaningful radial randomness, exactly
+// as required. Jitter magnitude is a fraction of the average nearest-
+// neighbor spacing (~0.35×) — enough to break the spiral's visual
+// regularity without opening gaps or clumping particles together.
+function buildFibonacciSphereRelaxed(n: number) {
+  const dir = new Float32Array(n * 3);
+  const seed = new Float32Array(n);
+  const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+  const avgSpacing = Math.sqrt((4 * Math.PI) / Math.max(1, n));
+  const jitterAmp = avgSpacing * 0.35;
+  for (let i = 0; i < n; i++) {
+    const y = 1 - (i / Math.max(1, n - 1)) * 2;
+    const radiusAtY = Math.sqrt(Math.max(0, 1 - y * y));
+    const theta = GOLDEN_ANGLE * i;
+    const nx = Math.cos(theta) * radiusAtY;
+    const ny = y;
+    const nz = Math.sin(theta) * radiusAtY;
+
+    // Two independent deterministic hashes of i (different constants —
+    // decorrelated, not derived from one another) drive jitter angle and
+    // magnitude.
+    const h1raw = Math.sin(i * 12.9898) * 43758.5453;
+    const h1 = h1raw - Math.floor(h1raw);
+    const h2raw = Math.sin(i * 78.233 + 4.7) * 12543.1234;
+    const h2 = h2raw - Math.floor(h2raw);
+    seed[i] = h1;
+
+    // Orthonormal tangent basis at the particle's normal — cross with world
+    // up, falling back to world-right at the poles where that's degenerate.
+    let tx: number, ty: number, tz: number;
+    if (Math.abs(ny) < 0.999) {
+      // cross(normal, (0,1,0))
+      tx = -nz; ty = 0; tz = nx;
+    } else {
+      // cross(normal, (1,0,0)) — only reached within ~2.5° of a pole
+      tx = 0; ty = nz; tz = -ny;
+    }
+    const tLen = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1;
+    tx /= tLen; ty /= tLen; tz /= tLen;
+    // second tangent = normal × tangent1 (already unit, both inputs unit+orthogonal)
+    const bx = ny * tz - nz * ty;
+    const by = nz * tx - nx * tz;
+    const bz = nx * ty - ny * tx;
+
+    const jitterAngle = h1 * Math.PI * 2;
+    const jitterMag = h2 * jitterAmp;
+    const ox = Math.cos(jitterAngle) * jitterMag;
+    const oy = Math.sin(jitterAngle) * jitterMag;
+
+    let px = nx + tx * ox + bx * oy;
+    let py = ny + ty * ox + by * oy;
+    let pz = nz + tz * ox + bz * oy;
+    const pLen = Math.sqrt(px * px + py * py + pz * pz) || 1;
+    px /= pLen; py /= pLen; pz /= pLen;
+
+    dir[i * 3] = px;
+    dir[i * 3 + 1] = py;
+    dir[i * 3 + 2] = pz;
+  }
+  return { dir, seed };
+}
+
 // ───────────────────────── shaders ──────────────────────────────────────────
 // Ashima Arts 3D simplex noise (webgl-noise, MIT) — the spatial noise field
 // both deformation layers sample. Reused verbatim; this is the standard
@@ -1548,7 +1627,14 @@ function JarvisBody({
   stateEnteredAtRef.current = stateEnteredAt;
 
   const { dir, seed } = useMemo(
-    () => buildFibonacciSphere(particleCount),
+    // Stage 4, distribution-correction pass — LOCKED, approved: replaces the
+    // raw unperturbed Fibonacci lattice with a deterministic tangent-plane
+    // jitter (see buildFibonacciSphereRelaxed's own comment for the full
+    // diagnosis/derivation). Do not revert to buildFibonacciSphere() —
+    // verified via mono-diagnostic A/B that the raw lattice produces an
+    // unmistakable diagonal spiral weave at production-scale brightness,
+    // which this fixes while preserving uniform global coverage.
+    () => buildFibonacciSphereRelaxed(particleCount),
     [particleCount]
   );
 
