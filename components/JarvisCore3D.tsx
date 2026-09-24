@@ -151,6 +151,28 @@ export type JarvisParams = {
   // state target moves them.
   directionality: number; // 0..~1: biases energyMask's sample point along a slowly-wandering reference direction in OBJECT SPACE, giving energy a preferred travel direction across the membrane. 0 = isotropic (no bias).
   turbulence: number; // 0..~1(-2 bounded): perturbs energyMask's broad-gate threshold using its OWN already-sampled ridge field (no new noise sample) — higher = more fragmented/irregular energy organization, not physical jitter.
+  // Stage 5, cyan-topology experiment: multiplies ONLY the cyan energyMask()
+  // call's ridge-extraction half-width (see that function's own comment).
+  // 1.0 is an exact no-op. Amber's call always passes 1.0 directly (not
+  // wired to this param) and is therefore unaffected by any value here.
+  cyanRidgeWidth: number;
+  // Stage 5, 2nd cyan-topology experiment: soft floor applied to broadGate's
+  // modulation of ridgeGate (see energyMask()'s own comment) — 0.0 is an
+  // exact no-op (reduces to the original broadGate*ridgeGate hard AND).
+  // Amber's call always passes 0.0 directly (not wired to this param) and
+  // is therefore unaffected by any value here.
+  cyanBroadFloor: number;
+  // Stage 5, territory-selector experiment (diagnosis-only approval →
+  // controlled experiment): threshold for a NEW, independent, very-low-
+  // frequency noise field that gates how much of the sphere is eligible to
+  // show ANY cyan ridge topology at all — separate from ridge character
+  // (cyanRidgeWidth) and continuity/intensity (cyanBroadFloor). Default
+  // -2.0 is an exact no-op: snoise() never produces a value that low, so
+  // territoryGate evaluates to 1.0 (fully open/unrestricted) everywhere,
+  // reproducing pre-territory behavior exactly. Amber's call always passes
+  // -2.0 directly (not wired to this param) and is therefore unaffected by
+  // any value here.
+  cyanTerritoryThreshold: number;
 
   // ── Membrane Expression Sub-Phase 1: ONE deterministic coherent fold.
   // Unlike energyIntensity/flowSpeed/coherence/warmEmphasis/directionality/
@@ -283,6 +305,21 @@ export const DEFAULT_PARAMS: JarvisParams = {
   // motion character.
   directionality: 0.0,
   turbulence: 0.0,
+  // Stage 5, cyan-topology experiment — default 1.0 (exact no-op, matches
+  // the prior hardcoded ridgeHalf constant). This is the value under active
+  // A/B art-direction testing; do not change the default without explicit
+  // project-owner approval of a specific candidate.
+  cyanRidgeWidth: 1.0,
+  // Stage 5, 2nd cyan-topology experiment — default 0.0 (exact no-op,
+  // reduces to the original hard broadGate*ridgeGate AND). This is the
+  // value under active A/B diagnostic testing; do not change the default
+  // without explicit project-owner approval of a specific candidate.
+  cyanBroadFloor: 0.0,
+  // Stage 5, territory-selector experiment — default -2.0 (exact no-op, see
+  // JarvisParams comment). This is the value under active A-D diagnostic
+  // testing; do not change the default without explicit project-owner
+  // approval of a specific candidate.
+  cyanTerritoryThreshold: -2.0,
   // Membrane Expression Sub-Phase 1: true default is 0 (inert, no-op) per
   // explicit instruction — this checkpoint's own test uses a dev-only
   // override (window.__jarvisFoldAmp) rather than raising this default.
@@ -834,6 +871,27 @@ uniform float uTMagDebug;
 // whether the mask itself forms coherent connected regions, independent of
 // whatever fragmentation the displacement-magnitude gating might add.
 uniform float uAmberMaskDebug;
+// Stage 5, cyan-topology experiment: ridge-width multiplier applied ONLY to
+// the cyan energyMask() call (see that function's own comment). 1.0 is an
+// exact no-op matching the previously-hardcoded constant.
+uniform float uCyanRidgeWidth;
+// Stage 5, 2nd cyan-topology experiment: soft floor applied to broadGate's
+// modulation of ridgeGate (see energyMask()'s own comment). 0.0 is an exact
+// no-op matching the original hard-AND formula.
+uniform float uCyanBroadFloor;
+// Stage 5, territory-selector experiment: threshold for the new low-
+// frequency territory-selector field applied ONLY to the cyan energyMask()
+// call (see that function's own comment). -2.0 is an exact no-op.
+uniform float uCyanTerritoryThreshold;
+// Stage 5 diagnostic (window.__jarvisCyanMaskDebug): mirrors
+// uAmberMaskDebug for the cyan side.
+uniform float uCyanMaskDebug;
+// Stage 5, territory-selector experiment diagnostic
+// (window.__jarvisCyanTerritoryDebug): outputs the raw territoryGate value
+// (post-threshold, pre-ridge/broad) directly as grayscale, cyan-side only —
+// isolates the territory selector's own eligible-area coverage independent
+// of ridge/broad structure.
+uniform float uCyanTerritoryDebug;
 
 // Legacy activity-mapping uniforms (Phase 2). No longer read by the
 // Checkpoint B color ramp below — the new ramp is driven directly by
@@ -985,7 +1043,43 @@ const vec3 VIOLET        = vec3(0.3760, 0.2900, 0.7600); // restrained violet/pu
 // a clean boundary — "energy behavior becomes less coherent and more
 // fragmented," without touching displacement. At turbulence=0 this is an
 // exact no-op (wobble=0).
-float energyMask(vec3 dir, float time, float phase, float coherence, float directionality, float turbulence, vec3 dirRef) {
+// Stage 5, cyan-topology experiment — LOCKED-SAFE parameterization: added
+// ridgeWidthMult (default/amber-call value 1.0, an EXACT no-op reducing to
+// the prior hardcoded 0.10 constant) so the CYAN call site alone can widen
+// its ridge-extraction band without touching amber's call, which continues
+// passing 1.0 explicitly and is therefore byte-for-byte equivalent to the
+// locked, verified Stage 3 baseline — broadGate, coherence handling, and
+// every other term are unchanged for both callers.
+//
+// Stage 5, 2nd experiment — continuity/topology diagnostic, LOCKED-SAFE
+// parameterization: added broadSoftFloor (default/amber-call value 0.0, an
+// EXACT no-op — mix(0.0, 1.0, broadGate) === broadGate, so the return
+// expression reduces to the original broadGate*ridgeGate hard-AND at 0.0).
+// Diagnosis (see conversation record): ridgeGate already contains the
+// useful continuous winding topology (zero-crossing extraction of a 4.2x
+// frequency field genuinely forms long connected curves); broadGate is an
+// independent, uncorrelated, coarser field (1.3x frequency, separate phase)
+// that — when hard-multiplied against ridgeGate — severs the ridge curve
+// wherever it crosses a broadGate boundary, producing the isolated-fragment
+// appearance rather than a topology problem in ridgeGate itself. This
+// parameter lets the CYAN call soften that hard clip: broadGate still
+// modulates intensity/how "activated" a region reads, but no longer
+// hard-zeros ridge topology outside its own boundaries — testing whether
+// this turns severed fragments into longer connected pathways. Amber's call
+// continues passing 0.0 explicitly (never reads this parameter) and is
+// therefore unaffected regardless of what value cyan is tested at.
+// Stage 5, territory-selector experiment: isolated as its own function (not
+// inlined in energyMask) so main()'s debug branch can call the EXACT same
+// math for the raw-territory diagnostic capture without duplicating it.
+float cyanTerritoryGate(vec3 dir, float time, float phase, float directionality, vec3 dirRef, float territoryThreshold) {
+  float dTrav = time * 0.11 * clamp(directionality, 0.0, 1.0);
+  vec3 sampleDir = dir + dirRef * dTrav * 0.4;
+  float territory = snoise(sampleDir * 0.4 + vec3(0.02, 0.017, -0.014) * time * 0.15 + phase * 1.31 + 23.0);
+  float territoryHalf = 0.12;
+  return smoothstep(territoryThreshold - territoryHalf, territoryThreshold + territoryHalf, territory);
+}
+
+float energyMask(vec3 dir, float time, float phase, float coherence, float directionality, float turbulence, vec3 dirRef, float ridgeWidthMult, float broadSoftFloor, float territoryThreshold) {
   float cw = clamp(coherence, 0.4, 2.2);
 
   float dTrav = time * 0.11 * clamp(directionality, 0.0, 1.0);
@@ -1003,9 +1097,18 @@ float energyMask(vec3 dir, float time, float phase, float coherence, float direc
 
   float broadHalf = 0.16 / cw;
   float broadGate = smoothstep(0.54 - broadHalf + wobble, 0.54 + broadHalf + wobble, broad);
-  float ridgeHalf = 0.10 / cw;
+  float ridgeHalf = (0.10 * ridgeWidthMult) / cw;
   float ridgeGate = smoothstep(0.82 - ridgeHalf, 0.82 + ridgeHalf, ridged);
-  return broadGate * ridgeGate;
+
+  // Stage 5, territory-selector experiment: a THIRD, independent, very-low-
+  // frequency noise field (own frequency/phase/drift — decorrelated from
+  // both broad and ridge, not derived from either) that gates whether this
+  // fragment's location is inside an "eligible" territory at all, before any
+  // ridge/broad structure is considered. At territoryThreshold <= -2.0
+  // (default), territoryGate saturates to 1.0 everywhere — exact no-op.
+  float territoryGateVal = cyanTerritoryGate(dir, time, phase, directionality, dirRef, territoryThreshold);
+
+  return territoryGateVal * ridgeGate * mix(broadSoftFloor, 1.0, broadGate);
 }
 
 // Colorspace boundary correction — proof-tested pass. All of this shader's
@@ -1390,14 +1493,32 @@ void main() {
     sin(energyTime * 0.071 + 4.3) + 0.5 * sin(energyTime * 0.045 + 3.1)
   ));
 
-  float energyCyan = clamp(energyMask(vDir, energyTime, 0.0, uCoherence, uDirectionality, uTurbulence, dirRef) * uEnergyIntensity, 0.0, 1.0);
-  float energyAmber = clamp(energyMask(vDir, energyTime, 47.3, uCoherence, uDirectionality, uTurbulence, dirRef) * uEnergyIntensity, 0.0, 1.0);
+  float energyCyan = clamp(energyMask(vDir, energyTime, 0.0, uCoherence, uDirectionality, uTurbulence, dirRef, uCyanRidgeWidth, uCyanBroadFloor, uCyanTerritoryThreshold) * uEnergyIntensity, 0.0, 1.0);
+  float energyAmber = clamp(energyMask(vDir, energyTime, 47.3, uCoherence, uDirectionality, uTurbulence, dirRef, 1.0, 0.0, -2.0) * uEnergyIntensity, 0.0, 1.0);
   float eff = rampEnergy(t, energyCyan, energyAmber);
   vec3 rampColor = coreColorRamp(t, vSeed, eff);
 
   if (uAmberMaskDebug > 0.5) {
     if (t >= 0.0) discard;
     gl_FragColor = vec4(energyAmber, energyAmber, energyAmber, 1.0);
+    return;
+  }
+
+  // Stage 5 diagnostic (window.__jarvisCyanMaskDebug): mirrors
+  // uAmberMaskDebug for the cyan side — outputs the raw energyCyan spatial
+  // gate directly (before rampEnergy/coreColorRamp), isolated to t>=0 via
+  // discard, so a pixel readback shows WHERE cyan energy exists independent
+  // of brightness/color.
+  if (uCyanMaskDebug > 0.5) {
+    if (t < 0.0) discard;
+    gl_FragColor = vec4(energyCyan, energyCyan, energyCyan, 1.0);
+    return;
+  }
+
+  if (uCyanTerritoryDebug > 0.5) {
+    if (t < 0.0) discard;
+    float tg = cyanTerritoryGate(vDir, energyTime, 0.0, uDirectionality, dirRef, uCyanTerritoryThreshold);
+    gl_FragColor = vec4(tg, tg, tg, 1.0);
     return;
   }
 
@@ -1692,6 +1813,11 @@ function JarvisBody({
       uWarmEmphasis: { value: params.warmEmphasis },
       uDirectionality: { value: params.directionality },
       uTurbulence: { value: params.turbulence },
+      uCyanRidgeWidth: { value: params.cyanRidgeWidth },
+      uCyanBroadFloor: { value: params.cyanBroadFloor },
+      uCyanTerritoryThreshold: { value: params.cyanTerritoryThreshold },
+      uCyanMaskDebug: { value: 0 },
+      uCyanTerritoryDebug: { value: 0 },
       uAmpFold: { value: params.ampFold },
       uFoldCenter: { value: new THREE.Vector3(0, 1, 0) },
       uFoldAxis: { value: new THREE.Vector3(1, 0, 0) },
@@ -1815,6 +1941,9 @@ function JarvisBody({
       u.uHighlightStrength.value = display.highlightStrength;
       u.uRearDarken.value = target.rearDarken;
       u.uFrontBoost.value = target.frontBoost;
+      u.uCyanRidgeWidth.value = target.cyanRidgeWidth;
+      u.uCyanBroadFloor.value = target.cyanBroadFloor;
+      u.uCyanTerritoryThreshold.value = target.cyanTerritoryThreshold;
       u.uNeuralActivity.value = display.neuralActivity;
       u.uEnergyIntensity.value = display.energyIntensity;
       u.uFlowSpeed.value = display.flowSpeed;
@@ -1881,6 +2010,8 @@ function JarvisBody({
       u.uAmberEffDebug.value = (typeof window !== "undefined" && (window as unknown as { __jarvisAmberEffDebug?: boolean }).__jarvisAmberEffDebug) ? 1 : 0;
       u.uTMagDebug.value = (typeof window !== "undefined" && (window as unknown as { __jarvisTMagDebug?: boolean }).__jarvisTMagDebug) ? 1 : 0;
       u.uAmberMaskDebug.value = (typeof window !== "undefined" && (window as unknown as { __jarvisAmberMaskDebug?: boolean }).__jarvisAmberMaskDebug) ? 1 : 0;
+      u.uCyanMaskDebug.value = (typeof window !== "undefined" && (window as unknown as { __jarvisCyanMaskDebug?: boolean }).__jarvisCyanMaskDebug) ? 1 : 0;
+      u.uCyanTerritoryDebug.value = (typeof window !== "undefined" && (window as unknown as { __jarvisCyanTerritoryDebug?: boolean }).__jarvisCyanTerritoryDebug) ? 1 : 0;
     }
     if (groupRef.current) {
       groupRef.current.rotation.y += dt * display.rotationSpeed;
