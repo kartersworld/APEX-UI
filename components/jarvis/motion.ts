@@ -43,6 +43,29 @@ export const TWEENABLE_KEYS = [
   "rotationSpeed",
   "activityIntensity",
   "highlightStrength",
+  "neuralActivity", // Phase 8 Checkpoint E — tweened now, visually wired in Checkpoint F
+  // Checkpoint H motion-grammar pass — the cognitive-energy dimensions
+  "energyIntensity",
+  "flowSpeed",
+  "coherence",
+  "warmEmphasis",
+  // Phase 4 — cognitive directionality + controlled energy turbulence.
+  // Both affect ONLY the energy field (see energyMask() in JarvisCore3D);
+  // never geometry/displacement/particleSize/camera/depth/opacity.
+  "directionality",
+  "turbulence",
+  // Membrane Expression Sub-Phase 1 — the ONE coherent-fold amplitude knob.
+  // This is a PHYSICAL displacement parameter (unlike everything above it in
+  // this list since Checkpoint H, which are energy/cognition-only) — it
+  // rides the same tween architecture but feeds the vertex shader's `field`
+  // accumulator alongside ampA/ampB/ampC, not the fragment-shader energy
+  // system. See foldField() in JarvisCore3D's vertex shader.
+  "ampFold",
+  // Membrane Expression Sub-Phase 2 — Fold #2's independent amplitude.
+  // Deliberately separate from ampFold (not a shared knob) so dominance
+  // between the two folds is independently controllable, per this
+  // sub-phase's "one dominant + one subordinate" requirement.
+  "ampFold2",
 ] as const;
 
 export type TweenKey = (typeof TWEENABLE_KEYS)[number];
@@ -68,6 +91,16 @@ export const TRANSITION_TAU: Record<JarvisState, PartialTween> = {
     rotationSpeed: 0.5,
     pulseStrength: 0.5,
     displacementIntensity: 0.5,
+    // Checkpoint H motion-grammar: slow, calm settle — matches idle's
+    // generally unhurried character among the other taus here.
+    energyIntensity: 0.6,
+    flowSpeed: 0.8,
+    coherence: 0.9,
+    warmEmphasis: 0.6,
+    // Phase 4: slow release back to isotropic/near-still — "the organized
+    // motion should slowly release back into quiet background cognition."
+    directionality: 0.9,
+    turbulence: 0.6,
   },
   // Fastest of all eight — "I stopped and I am paying attention." Radius
   // (the expand) takes a touch longer than rotation/pulse settling, which is
@@ -81,6 +114,13 @@ export const TRANSITION_TAU: Record<JarvisState, PartialTween> = {
     activityIntensity: 0.22,
     radius: 0.32,
     compressionAmount: 0.2,
+    neuralActivity: 0.22, // fast settle to its (near-zero) target, same character as activityIntensity here
+    energyIntensity: 0.25,
+    flowSpeed: 0.3,
+    coherence: 0.35,
+    warmEmphasis: 0.3,
+    directionality: 0.3,
+    turbulence: 0.3,
   },
   thinking: {
     compressionAmount: 0.22,
@@ -88,22 +128,58 @@ export const TRANSITION_TAU: Record<JarvisState, PartialTween> = {
     pulseStrength: 0.3,
     rotationSpeed: 0.5,
     activityIntensity: 0.35,
+    neuralActivity: 0.35,
+    energyIntensity: 0.4,
+    flowSpeed: 0.55,
+    coherence: 0.6,
+    warmEmphasis: 0.45,
+    directionality: 0.6,
+    turbulence: 0.5,
   },
+  // Phase 4: directionality's tau is deliberately the SLOWEST of the
+  // cognitive-energy dimensions here — "the existing exploratory activity
+  // should gradually begin developing directional organization" (Thinking →
+  // Researching), not snap into a traveling flow.
   researching: {
     rotationSpeed: 0.4,
     timeScale: 0.35,
     activityIntensity: 0.4,
+    neuralActivity: 0.4,
+    energyIntensity: 0.4,
+    flowSpeed: 0.5,
+    coherence: 0.55,
+    warmEmphasis: 0.45,
+    directionality: 0.85,
+    turbulence: 0.5,
   },
+  // Phase 4: directionality/turbulence settle FASTER than Researching's —
+  // "the directional flow should gradually tighten and become more
+  // decisive," i.e. uncertainty collapsing into execution reads as a
+  // relatively prompt resolve, not a slow drift.
   acting: {
     pulseStrength: 0.3,
     displacementIntensity: 0.3,
     rotationSpeed: 0.32,
     activityIntensity: 0.3,
+    neuralActivity: 0.3,
+    energyIntensity: 0.3,
+    flowSpeed: 0.35,
+    coherence: 0.4,
+    warmEmphasis: 0.35,
+    directionality: 0.4,
+    turbulence: 0.28,
   },
   speaking: {
     pulseStrength: 0.25,
     activityIntensity: 0.25,
     displacementIntensity: 0.3,
+    neuralActivity: 0.25,
+    energyIntensity: 0.35,
+    flowSpeed: 0.4,
+    coherence: 0.45,
+    warmEmphasis: 0.4,
+    directionality: 0.4,
+    turbulence: 0.35,
   },
   // The rise is carried by getCompleteEnvelope's own attack/decay shape, not
   // by this tau — kept moderate so the state target's baseline (radius,
@@ -113,14 +189,29 @@ export const TRANSITION_TAU: Record<JarvisState, PartialTween> = {
     pulseStrength: 0.2,
     radius: 0.25,
     displacementIntensity: 0.25,
+    energyIntensity: 0.3,
+    flowSpeed: 0.35,
+    coherence: 0.4,
+    warmEmphasis: 0.35,
+    directionality: 0.35,
+    turbulence: 0.3,
   },
   // Fast-ish but not instant — "immediately disrupted, not a hard cut."
+  // directionality settles toward its own near-zero target quickly (Error is
+  // NOT purposeful/directed), while turbulence's rise is the primary carrier
+  // of "controlled irregularity."
   error: {
     compressionAmount: 0.2,
     pulseStrength: 0.22,
     displacementIntensity: 0.25,
     rotationSpeed: 0.3,
     timeScale: 0.28,
+    energyIntensity: 0.3,
+    flowSpeed: 0.35,
+    coherence: 0.3,
+    warmEmphasis: 0.3,
+    directionality: 0.3,
+    turbulence: 0.3,
   },
 };
 
@@ -157,6 +248,94 @@ export function getTiltWobble(t: number): number {
   return quasi(t, 42) * 0.03;
 }
 
+function normalize3(v: [number, number, number]): [number, number, number] {
+  const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) || 1;
+  return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+// ═══════════════ Membrane Expression Sub-Phase 1: fold reference ═══════════
+// Two GLOBAL (not per-particle) wandering unit vectors that the vertex
+// shader's foldField() reads every particle against — computed ONCE per
+// frame here on the CPU (cheaper than 18,000 repeated evaluations in the
+// shader) using the SAME quasi() non-looping technique already validated
+// elsewhere in this file, just with fresh seeds.
+//
+// `center` marks where the fold currently sits on the sphere. `axis` marks
+// the crease's grain — critically, it is Gram-Schmidt–orthogonalized
+// against `center` (projected into the tangent plane at that point, then
+// renormalized) so it is always TANGENT to the sphere there. That is what
+// keeps the ridge/valley crease spanning the fold's cap symmetrically —
+// without it, an axis that happened to point partly toward/away from center
+// would skew or collapse the crease instead of splitting the cap evenly.
+export function getFoldReference(t: number): {
+  center: [number, number, number];
+  axis: [number, number, number];
+} {
+  const rawCenter: [number, number, number] = [
+    quasi(t, 61) + 0.4 * quasi(t * 0.6, 62.5),
+    quasi(t, 63) + 0.4 * quasi(t * 0.6, 64.5),
+    quasi(t, 65) + 0.4 * quasi(t * 0.6, 66.5),
+  ];
+  const center = normalize3(rawCenter);
+
+  const rawAxis: [number, number, number] = [
+    quasi(t, 71) + 0.4 * quasi(t * 0.6, 72.5),
+    quasi(t, 73) + 0.4 * quasi(t * 0.6, 74.5),
+    quasi(t, 75) + 0.4 * quasi(t * 0.6, 76.5),
+  ];
+  const alongCenter =
+    rawAxis[0] * center[0] + rawAxis[1] * center[1] + rawAxis[2] * center[2];
+  const tangent: [number, number, number] = [
+    rawAxis[0] - alongCenter * center[0],
+    rawAxis[1] - alongCenter * center[1],
+    rawAxis[2] - alongCenter * center[2],
+  ];
+  const axis = normalize3(tangent);
+
+  return { center, axis };
+}
+
+// ═══════════════ Membrane Expression Sub-Phase 2: second fold reference ════
+// Fold #2's own independently-evolving center/axis pair — same technique as
+// getFoldReference (Fold #1) above, which is LOCKED and deliberately left
+// untouched by this addition, not refactored into a shared parameterized
+// helper, so Fold #1's exact trajectory cannot be perturbed even
+// incidentally. Two things keep the two folds from synchronizing or
+// chasing one another, per that requirement:
+//   1. Entirely different quasi() seeds (131+ vs Fold #1's 61+) — different
+//      phase offsets into the same incommensurate-sine field.
+//   2. A different time-rate multiplier at the call site in JarvisCore3D
+//      (0.05 for Fold #2 vs Fold #1's 0.06) — their relative phase keeps
+//      drifting rather than locking into a fixed offset, since the two
+//      rates are not a simple ratio of each other.
+export function getFoldReference2(t: number): {
+  center: [number, number, number];
+  axis: [number, number, number];
+} {
+  const rawCenter: [number, number, number] = [
+    quasi(t, 131) + 0.4 * quasi(t * 0.6, 132.5),
+    quasi(t, 133) + 0.4 * quasi(t * 0.6, 134.5),
+    quasi(t, 135) + 0.4 * quasi(t * 0.6, 136.5),
+  ];
+  const center = normalize3(rawCenter);
+
+  const rawAxis: [number, number, number] = [
+    quasi(t, 141) + 0.4 * quasi(t * 0.6, 142.5),
+    quasi(t, 143) + 0.4 * quasi(t * 0.6, 144.5),
+    quasi(t, 145) + 0.4 * quasi(t * 0.6, 146.5),
+  ];
+  const alongCenter =
+    rawAxis[0] * center[0] + rawAxis[1] * center[1] + rawAxis[2] * center[2];
+  const tangent: [number, number, number] = [
+    rawAxis[0] - alongCenter * center[0],
+    rawAxis[1] - alongCenter * center[1],
+    rawAxis[2] - alongCenter * center[2],
+  ];
+  const axis = normalize3(tangent);
+
+  return { center, axis };
+}
+
 // ═══════════════════════════ 2. CONTINUOUS IN-STATE MOTION ══════════════════
 // Small ADDITIVE offsets layered on top of the tau-eased "live" values every
 // frame — never written back into `live`, so they ride on top of the settle
@@ -166,13 +345,19 @@ export function getTiltWobble(t: number): number {
 export function getContinuousMotion(state: JarvisState, t: number): PartialTween {
   switch (state) {
     case "idle":
-      // "Alive, available, calm, intelligent" — slow irregular rotation
-      // wobble, extremely subtle breathing that never fully bottoms out,
-      // gentle large-scale deformation drift.
+      // Phase 8 Checkpoint D: "alive, available, calm, intelligent" now
+      // comes from the shader's own per-layer drift (JarvisCore3D's
+      // driftA/B/C — dominant field slowest, micro-detail fastest), NOT
+      // from a global pulseStrength/displacementIntensity oscillation here.
+      // Either of those two multiplies the WHOLE combined field uniformly —
+      // however quasi-periodic the envelope, a single scalar breathing the
+      // entire body in and out reads as exactly that: breathing/inflating.
+      // Only a tiny rotational variation remains; the changing silhouette
+      // itself (lobes strengthening/weakening/migrating as the drifting
+      // noise field passes through them) is what now proves the Core is
+      // alive, per the approved Checkpoint D direction.
       return {
-        rotationSpeed: quasi(t, 1) * 0.02,
-        pulseStrength: 0.02 + (quasi(t, 2) * 0.5 + 0.5) * 0.02,
-        displacementIntensity: quasi(t, 3) * 0.03,
+        rotationSpeed: quasi(t, 1) * 0.015,
       };
 
     case "listening":
@@ -270,6 +455,26 @@ export function getSpeakingModulation(smoothedAmplitude: number): PartialTween {
     displacementIntensity: a * 0.22,
     activityIntensity: a * 0.22,
     highlightStrength: a * 0.15,
+    // Phase 5: speech amplitude also modulates the Checkpoint H cognitive-
+    // energy dimensions — this was explicitly deferred through Phases 1-4
+    // ("Speaking-specific speechAmplitude integration is NOT part of this
+    // pass"). Same additive-on-top-of-resting-target mechanism as the four
+    // fields above: jarvisState.ts's speaking profile is the quiet floor,
+    // this is what voice adds on top of it, moment to moment. Kept modest —
+    // energy should track the voice, not overwhelm the body.
+    energyIntensity: a * 0.35,
+    flowSpeed: a * 0.45,
+    coherence: a * 0.25,
+    // Small amber-leaning nudge while actively speaking — voice is JARVIS's
+    // OUTPUT, distinct from Thinking/Researching/Acting's cyan-leaning
+    // internal-computation read. Deliberately far short of Error's static
+    // 0.35 target so Speaking never reads as "disrupted."
+    warmEmphasis: a * 0.18,
+    // A small directional nudge tracks louder moments as brief pushes of
+    // more organized outward energy, without approaching Acting/Researching
+    // levels — voice modulates the SAME resting body, not a separate
+    // waveform visualizer.
+    directionality: a * 0.2,
   };
 }
 

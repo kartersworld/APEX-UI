@@ -275,12 +275,20 @@ export default function ApexWorld() {
         </div>
       )}
 
-      {/* cyan LIGHT-CAST - app copy exactly: mixBlendMode screen (only ever LIFTS the
-          navy, never darkens), brightens while speaking. The app has NO dark moat disc
-          in dark mode - that layer is its light-theme "reactor well" only. */}
+      {/* cyan LIGHT-CAST - mixBlendMode screen (only ever LIFTS the navy, never
+          darkens), brightens while speaking. The app has NO dark moat disc
+          in dark mode - that layer is its light-theme "reactor well" only.
+          Checkpoint H diagnosis: this was the "blue shaded halo" the project
+          owner flagged during state testing. Root cause confirmed (not
+          JarvisCore3D/bloom/ShaderBackground) — an always-on ambient wash at
+          0.18 baseline behind the Core, independent of JarvisCore3D's own
+          Checkpoint H dark-body work. Kept (capability preserved, still
+          state-reactive) but baseline/peak both cut substantially — at 0.18
+          it was competing with the Core's "dark body first" identity across
+          every state, not just visible during Speaking. */}
       <div aria-hidden="true" style={{
         position: "absolute", inset: 0, zIndex: 1, pointerEvents: "none", mixBlendMode: "screen",
-        background: `radial-gradient(circle at 50% 42%, rgba(13,210,255,${jarvis.state === "speaking" ? 0.30 : 0.18}) 0%, rgba(13,170,228,0.08) 30%, rgba(8,17,31,0) 62%)`,
+        background: `radial-gradient(circle at 50% 42%, rgba(13,210,255,${jarvis.state === "speaking" ? 0.20 : 0.06}) 0%, rgba(13,170,228,0.03) 30%, rgba(8,17,31,0) 62%)`,
         transition: "background 0.6s ease",
       }} />
 
