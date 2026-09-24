@@ -718,6 +718,24 @@ uniform float uGrayTestValue;
 // colorspace fix end-to-end. Independent of the correction applied to the
 // real production/Stage1/Stage2 paths.
 uniform float uGrayTestCorrected;
+// Stage 3 diagnostic (window.__jarvisAmberEffDebug): outputs the raw eff
+// value (same rampEnergy() output the amber coreColorRamp branch consumes)
+// as solid grayscale, restricted to amber-side particles (t<0) via discard
+// — measures the amber-side eff distribution in isolation, same technique
+// as the earlier cyan-side uEffDebug calibration. Not a permanent
+// instrumentation path.
+uniform float uAmberEffDebug;
+// Stage 3 diagnostic (window.__jarvisTMagDebug): outputs abs(t) directly
+// (not eff) for amber-side (t<0) particles only — isolates whether a low
+// amber eff population is caused by the displacement field rarely going
+// negative enough, vs. the energyAmber mask itself being inactive.
+uniform float uTMagDebug;
+// Stage 3 spatial-coherence diagnostic (window.__jarvisAmberMaskDebug):
+// outputs energyAmber (the raw energyMask() gate, BEFORE the |t|-dependent
+// shapedA multiply in rampEnergy) directly, amber-side only — isolates
+// whether the mask itself forms coherent connected regions, independent of
+// whatever fragmentation the displacement-magnitude gating might add.
+uniform float uAmberMaskDebug;
 
 // Legacy activity-mapping uniforms (Phase 2). No longer read by the
 // Checkpoint B color ramp below — the new ramp is driven directly by
@@ -952,9 +970,91 @@ float rampEnergy(float t, float energyCyan, float energyAmber) {
     // spatial mask, not by this curve.
     return shaped * mix(0.03, 1.0, energyCyan);
   }
-  const float GAMMA_AMBER = 3.8; // Checkpoint H, final pass: 3.6→3.8 — steeper than cyan's, decoupled per Checkpoint G point 4
+  // Stage 3 amber calibration pass: 3.8→2.2. Kept deliberately steeper than
+  // cyan's 1.9 (amber must read as MORE subordinate/rare than cyan per this
+  // stage's spec) while still letting genuine high-|t| valley particles
+  // register a nonzero shapedA at all — at 3.8 essentially the entire
+  // population rounded to 0 (see coreColorRamp's amber-branch comment for
+  // the measured evidence). The energyAmber mask (its own spatial gate,
+  // untouched) still governs WHERE amber can ever appear; this only affects
+  // how strongly a mask-active valley particle's displacement contributes.
+  const float GAMMA_AMBER = 2.2;
   float shapedA = pow(u, GAMMA_AMBER);
-  return shapedA * mix(0.025, 1.0, energyAmber); // floor cut further 0.04→0.025
+  // Stage 3 topology diagnostic (same-frame synchronized capture: raw
+  // energyAmber mask vs. eff, isolating particles where energyAmber<=0.05 —
+  // i.e. clearly OFF the coherent ridge — that nonetheless crossed the first
+  // visible amber threshold, eff>=0.01): with the previous 0.025 floor, 81%
+  // of all visible-amber pixels in the sampled frame were this off-ridge
+  // leak (11370 of 14036 px), vs. only 1673 px genuinely on-ridge
+  // (energyAmber>0.3). Root cause: mix(floor, 1.0, energyAmber) is LINEAR,
+  // so even a small/edge-noise energyAmber value (0.05-0.2) already pushes
+  // the floor most of the way toward 1.0 — meaning raw |t| alone, largely
+  // uncorrelated with energyAmber's ridge shape, was deciding WHERE most
+  // visible amber appeared, backwards from the intended hierarchy
+  // (energyAmber=WHERE, displacement=HOW STRONGLY). A first attempt (linear
+  // mix, floor merely lowered 0.025→0.008) cut total leak but a re-measure
+  // with a stricter off-ridge definition (energyAmber<=0.02) still showed
+  // leak surviving via the same linear-slope mechanism at slightly higher
+  // energyAmber. Fix: gate the floor's ramp with pow(energyAmber, 3.0)
+  // instead of a linear mix, so the floor stays near its minimum until
+  // energyAmber is genuinely substantial (ridge core), then rises — same
+  // technique as GAMMA_CYAN/GAMMA_AMBER shaping u, applied to the mask
+  // instead of displacement. Verified on the same captured frame: floor
+  // 0.006 + power 3.0 reduces genuinely-off-ridge leak to 0 px (was 3772 at
+  // floor=0.025) and edge-zone leak to 80 px (was 2193), while on-ridge
+  // visible coverage stays at 1549 of that frame's 2419 baseline (64%) — a
+  // real reduction in amber quantity (expected and desired per spec: "may
+  // disappear almost entirely at some moments") but now 95% of what remains
+  // visible is genuine ridge signal (1549/1629) instead of 29% (2419/8384).
+  float ridgeGateA = pow(clamp(energyAmber, 0.0, 1.0), 3.0);
+  float dispModulated = shapedA * mix(0.006, 1.0, ridgeGateA);
+  // Stage 3, 2nd correction pass: re-verifying against real production
+  // captures (four honest unboosted frames, ~26s of continuous run) showed
+  // the topology fix above was too conservative — amber almost never
+  // crossed the first visibility threshold (0.01) at all. Diagnosed why by
+  // reconstructing shapedA from a same-instant captured frame and testing
+  // "raise the floor" candidates offline first: raising 0.006 does NOT
+  // help, because at ridgeGateA≈1 (deep in a strong ridge) mix() already
+  // returns ≈1 regardless of the floor's value — the floor constant only
+  // ever affects LOW-ridgeGateA (edge/off-ridge) particles, i.e. raising it
+  // just reintroduces the leak this pass exists to remove, while doing
+  // nothing for genuine ridge-core particles whose own |t| happens to be
+  // weak (measured: on that captured frame, on-ridge shapedA median was
+  // exactly 0.0 — median ridge particle has almost no displacement of its
+  // own). The actual bottleneck is that shapedA and energyAmber are
+  // independent fields, so a strong ridge can coincide with weak local
+  // displacement and never light up under a purely multiplicative formula,
+  // no matter how the floor constant is tuned.
+  // Fix: a SEPARATE, additive, ridge-gated minimum — RIDGE_MIN * ridgeGateA
+  // — using the SAME pow(energyAmber,3) gate (so it inherits the identical
+  // off-ridge protection: gate≈0 off-ridge means this term is also ≈0
+  // there, structurally unable to leak) but independent of shapedA. This
+  // guarantees the STRONGEST ridge particles (ridgeGateA near 1) reach a
+  // baseline eff regardless of their own displacement, while weaker ridge
+  // regions (ridgeGateA<1) get proportionally less — so only the ridge's
+  // own strongest moments become legible, not the whole structure
+  // uniformly. Combined with dispModulated via max(): displacement can
+  // still push a particle brighter than this baseline (the "occasional
+  // tiny hotter point" requirement) but can no longer suppress a strong
+  // ridge to invisible. Topology-gate architecture (pow(energyAmber,3) on
+  // both terms) is LOCKED/approved — this constant is the only thing this
+  // pass may touch.
+  //
+  // 2nd calibration pass: 0.03→0.045. At normal (uncropped, unboosted)
+  // dashboard scale, 45-60s of honest production captures showed the
+  // topology fix produced correct temporal behavior (amber genuinely
+  // absent, faint, or an occasional connected arc) but the strongest event
+  // was still extremely subtle — a fully-saturated ridge (energyAmber=1,
+  // ridgeGateA=1) only reached eff=RIDGE_MIN=0.03, just past the
+  // 0.025 DEEP_AMBER→AMBER_BASE boundary. Raising to 0.045 pushes a
+  // fully-saturated ridge about 40% further into the 0.025-0.06
+  // AMBER_BASE→AMBER_INTENSE tier without reaching AMBER_EXTREME — a small,
+  // amplitude-only change; the topology gate shape (pow(...,3)) and both
+  // off-ridge floors (0.006 on dispModulated) are untouched, so leak
+  // immunity is unaffected (off-ridge ridgeGateA≈0 regardless of this
+  // constant's value).
+  const float RIDGE_MIN = 0.045;
+  return max(dispModulated, RIDGE_MIN * ridgeGateA);
 }
 
 // Phase 8 Checkpoint G — the displacement-driven ramp. The RELATIONSHIP
@@ -1026,12 +1126,27 @@ vec3 coreColorRamp(float t, float seed, float eff) {
     // stays a trace/negligible accent this stage, not a reachable tier.
     return mix(CYAN_BRIGHT, CYAN_EXTREME, clamp((eff - 0.16) / 0.28, 0.0, 1.0));
   }
-  if (eff < 0.5) return DEEP_AMBER;
-  // Checkpoint H, final pass: flat-dark widened 0.38→0.5, transition
-  // narrowed (width 0.34→0.16) — same snappier-rhythm reasoning as cyan.
-  if (eff < 0.66) return mix(DEEP_AMBER, AMBER_BASE, (eff - 0.5) / 0.16);
-  if (eff < 0.91) return mix(AMBER_BASE, AMBER_INTENSE, (eff - 0.66) / 0.25);
-  return mix(AMBER_INTENSE, AMBER_EXTREME, clamp((eff - 0.91) / 0.09, 0.0, 1.0));
+  // Stage 3 amber calibration pass — thresholds recalibrated, same
+  // evidence-first methodology as the cyan pass. Diagnostic pixel-readback
+  // (amber-side eff, isolated via discard on t>=0) showed the OLD
+  // thresholds (0.5/0.66/0.91) sat entirely outside the eff range this
+  // geometry/energyAmber mask can actually produce — even |t| reaching
+  // 0.58 (confirmed via a separate abs(t) readback, so displacement magnitude
+  // was never the bottleneck) combined with GAMMA_AMBER=3.8 and the 0.025
+  // floor meant eff rounded to exactly 0 for ~100% of the sampled amber
+  // population across two independent samples (47k and 50k pixels) — amber
+  // was completely invisible, not merely subordinate. Measured achievable
+  // range after lowering GAMMA_AMBER (see below): p99≈0.008, max≈0.04-0.11
+  // (varies — the energyAmber mask is itself a sparse, traveling structure,
+  // same as cyan's). Thresholds placed to match: the flat-dark zone now
+  // covers the ~99th percentile (amber stays invisible on all but the
+  // rarest particles, deliberately sparser than cyan's own thresholds per
+  // this stage's "extremely rare peak" requirement), with AMBER_EXTREME
+  // reachable only by genuine outlier peaks near the measured max.
+  if (eff < 0.01) return DEEP_AMBER;
+  if (eff < 0.025) return mix(DEEP_AMBER, AMBER_BASE, (eff - 0.01) / 0.015);
+  if (eff < 0.06) return mix(AMBER_BASE, AMBER_INTENSE, (eff - 0.025) / 0.035);
+  return mix(AMBER_INTENSE, AMBER_EXTREME, clamp((eff - 0.06) / 0.06, 0.0, 1.0));
 }
 
 // Phase 8 Checkpoint C — the internal amber nucleus, entirely emergent: no
@@ -1182,6 +1297,12 @@ void main() {
   float eff = rampEnergy(t, energyCyan, energyAmber);
   vec3 rampColor = coreColorRamp(t, vSeed, eff);
 
+  if (uAmberMaskDebug > 0.5) {
+    if (t >= 0.0) discard;
+    gl_FragColor = vec4(energyAmber, energyAmber, energyAmber, 1.0);
+    return;
+  }
+
   // Temporary calibration diagnostic (window.__jarvisEffDebug): outputs the
   // raw eff value as solid grayscale (alpha forced to 1, bypassing the
   // normal edge/opacity antialiasing) so a JS-side pixel readback can
@@ -1190,6 +1311,29 @@ void main() {
   // instrumentation path — reverted after this calibration pass.
   if (uEffDebug > 0.5) {
     gl_FragColor = vec4(eff, eff, eff, 1.0);
+    return;
+  }
+
+  // Stage 3 diagnostic (window.__jarvisAmberEffDebug): isolates the
+  // amber-side (t<0) eff population — same eff value, same rampEnergy()
+  // output, just restricted via discard so a pixel readback measures the
+  // amber distribution without cyan-side pixels mixed in. R=eff, G=energyAmber
+  // in the SAME single draw call — added so a same-instant readback can
+  // compare eff directly against its own energyAmber mask value without the
+  // temporal drift of capturing mask and eff in two separate frames (which
+  // measurably misclassified boundary particles during floor-leak
+  // diagnosis, since the ridge is only 1-3px wide on screen and a couple of
+  // frames' drift shifts it).
+  if (uAmberEffDebug > 0.5) {
+    if (t >= 0.0) discard;
+    gl_FragColor = vec4(eff, energyAmber, 0.0, 1.0);
+    return;
+  }
+
+  if (uTMagDebug > 0.5) {
+    if (t >= 0.0) discard;
+    float tm = abs(t);
+    gl_FragColor = vec4(tm, tm, tm, 1.0);
     return;
   }
 
@@ -1463,6 +1607,9 @@ function JarvisBody({
       uFinalFrontDebug: { value: 0 },
       uGrayTestValue: { value: -1 },
       uGrayTestCorrected: { value: 0 },
+      uAmberEffDebug: { value: 0 },
+      uTMagDebug: { value: 0 },
+      uAmberMaskDebug: { value: 0 },
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
@@ -1626,6 +1773,9 @@ function JarvisBody({
         u.uGrayTestValue.value = typeof gtv === "number" ? gtv : -1;
       }
       u.uGrayTestCorrected.value = (typeof window !== "undefined" && (window as unknown as { __jarvisGrayTestCorrected?: boolean }).__jarvisGrayTestCorrected) ? 1 : 0;
+      u.uAmberEffDebug.value = (typeof window !== "undefined" && (window as unknown as { __jarvisAmberEffDebug?: boolean }).__jarvisAmberEffDebug) ? 1 : 0;
+      u.uTMagDebug.value = (typeof window !== "undefined" && (window as unknown as { __jarvisTMagDebug?: boolean }).__jarvisTMagDebug) ? 1 : 0;
+      u.uAmberMaskDebug.value = (typeof window !== "undefined" && (window as unknown as { __jarvisAmberMaskDebug?: boolean }).__jarvisAmberMaskDebug) ? 1 : 0;
     }
     if (groupRef.current) {
       groupRef.current.rotation.y += dt * display.rotationSpeed;

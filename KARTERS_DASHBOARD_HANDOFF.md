@@ -7,6 +7,66 @@
 
 ---
 
+## 0. ⚠️ MOST RECENT SESSION — READ THIS FIRST (2026-09-24, Claude Desktop)
+
+**This section is more current than the "PHASE 8" framing below, and supersedes the 2026-09-23 version of this section** (Stage 3 amber, described there as "in progress, open question for Codex," was continued and fully resolved/locked in this later session — Codex apparently did not pick it up in between). Everything from §1 onward was written at the end of the Phase 1–7 session and is still architecturally accurate.
+
+### What this session was
+Completion and LOCKING of Stage 3 (amber) of the still-outstanding **JARVIS Core visual refinement** work (§2, §13) — the "Color + Energy Mapping" stage. This was **not** Phase 8. Phase 8 ("Performance, QA & Final Polish") remains exactly as described below: not started. This session also produced a diagnosis and a *proposed, not-yet-implemented* plan for the next visual stage (whole-Core readability) — see the new subsection at the end of this §0.
+
+### Git state
+- **Checkpoint commit `5b94212`** — "Checkpoint: colorspace-corrected Stage 2 rendering pipeline" — is the last committed checkpoint. Everything up to and including this commit is user-approved and committed.
+- **Stage 3 (amber) is now fully approved/locked but, as of this doc's writing, still UNCOMMITTED on top of `5b94212`.** Run `git status`/`git diff` before assuming what's committed vs. not — a checkpoint commit for Stage 3 may or may not have been made since.
+- If anything needs to be reverted, `5b94212` is the last known-good committed point, not the Phase 1–7 checkpoint (`4979fc7`) referenced elsewhere in this doc.
+
+### What was done, in order (all inside `components/JarvisCore3D.tsx`'s fragment shader)
+1. **Stage 2 cyan threshold recalibration** (locked): `coreColorRamp()`'s cyan-branch `eff` thresholds recalibrated from `0.44/0.62/0.87/0.965` to `0.03/0.055/0.09/0.16`, via measured evidence (pixel-readback diagnostic of the actual `eff` distribution the approved fold geometry produces — see `uEffDebug` in the shader).
+2. **Stage 2 palette pass** (locked): `ELECTRIC_BLUE` darkened, two internal mix curves adjusted so the mid-energy tier reads as deep saturated blue rather than pastel.
+3. **GAMMA_CYAN redistribution** (locked, approved): diagnosed that step 2 alone couldn't fix a *bimodal* `eff` population (~90% flat-dark, ~5-7% already bright, almost nothing in between). Root cause was `rampEnergy()`'s `GAMMA_CYAN` exponent, not the palette. Lowered `GAMMA_CYAN` 3.0→**1.9**. Measured resulting distribution: `<0.03`=78.3%, `0.03-0.055`=12.5%, `0.055-0.09`=5.8%, `0.09-0.16`=2.8%, `>0.16`=0.65% — continuous, no longer bimodal. **Do not change `GAMMA_CYAN` or the four cyan thresholds without reopening this explicitly with the project owner.**
+4. **Colorspace/gamma pipeline bug — found and fixed** (locked, approved): proved via a deterministic 6-point test + an on/off control test that `@react-three/postprocessing`'s `EffectComposer`/`EffectPass` (the `<Bloom>` wrapper) was applying a linear→sRGB encode to fragment-shader output that was already authored as display-ready sRGB color — i.e., the signal was being sRGB-encoded twice in effect (once by the author, once by the pipeline). Fixed **at the boundary**: added `srgbToLinear()` (the exact inverse of three.js's own `sRGBTransferOETF`, not an approximate gamma curve) and applied it once at each final `gl_FragColor` write (production path, Stage 1 diagnostic, Stage 2 diagnostic). **Do not "fix" perceived brightness by darkening palette constants — the correct boundary fix is already in place; if something still looks wrong, look at the ramp/thresholds/masks, not the colorspace layer.**
+5. **Bloom re-derivation** (locked, approved): `bloomThreshold` 0.92→**0.83**, re-derived (not guessed) against the now-correctly-linear signal so the same "only rare near-white peaks trigger bloom" behavior survives the colorspace fix. Derivation is documented inline in `DEFAULT_PARAMS`'s comment.
+6. **Stage 3 amber calibration** (LOCKED, approved): measured the amber-side `eff` distribution and found it was **completely unreachable** (literally 0 at every percentile up to p99, even though displacement magnitude was fine) — `GAMMA_AMBER` (3.8) combined with a 0.025 floor collapsed the whole population below 8-bit rounding. Lowered `GAMMA_AMBER` 3.8→**2.2** (deliberately kept steeper than cyan's 1.9 — amber must read as more subordinate/rare) and recalibrated amber's ramp thresholds from `0.5/0.66/0.91` to `0.01/0.025/0.06` to match the measured achievable range.
+7. **Stage 3 spatial-coherence fix — root cause found and fixed (LOCKED, approved architecture)**: the population-percentage numbers above were reachable but visually read as a "rounded patch," not a ridge. Same-frame synchronized diagnostic captures (raw `energyAmber` mask vs. `eff`, both channels from one draw call so they're pixel-exact simultaneous, not two separate frames) proved the cause: `rampEnergy()`'s amber floor was `shapedA * mix(0.025, 1.0, energyAmber)` — a **linear** ramp, so even small/edge-noise `energyAmber` values let raw displacement (`shapedA`, uncorrelated with the mask's ridge shape) push a particle into visible amber on its own. Measured: 81% of all visible-amber pixels in the sampled frame were this off-ridge leak, not the genuine ridge. **Fixed architecture (do not revert):**
+   - `energyAmber` alone decides **WHERE** amber can ever be visible. Displacement only modulates **HOW STRONGLY** an already-valid on-ridge particle activates. Displacement can never, by itself, create visible amber off the ridge.
+   - Implementation: `rampEnergy()`'s amber branch now computes `ridgeGateA = pow(clamp(energyAmber,0,1), 3.0)` (a steep, not linear, gate — stays near its minimum until `energyAmber` is genuinely substantial, i.e. ridge core, then rises) and combines two terms via `max()`:
+     - `dispModulated = shapedA * mix(0.006, 1.0, ridgeGateA)` — the existing displacement-driven brightness, now leak-safe.
+     - `RIDGE_MIN * ridgeGateA` where **`RIDGE_MIN = 0.045`** — an additive, ridge-gated *minimum* that guarantees the strongest ridge particles reach baseline visibility even when their own displacement happens to be weak (this was necessary because displacement and `energyAmber` are independent fields — a strong ridge can coincide with near-zero local displacement and never light up under a purely multiplicative formula).
+   - **Verified (same-instant, single-draw-call captures) at final calibration:** 0 off-ridge leak (both a strict `energyAmber<=0.02` bucket and a `0.02-0.3` edge-zone bucket), 100% of visible amber traced to genuine on-ridge particles (`energyAmber>0.3`).
+   - **Verified in production** (honest, unboosted captures, ~87s of one continuous Thinking-state run): amber ranges from effectively absent, through faint specks, to an occasional legible connected wisp/arc — never a blob, never a large region, always clearly subordinate to cyan. `RIDGE_MIN` was calibrated in two small steps (0.03 → 0.045) purely for dashboard-scale readability of the *legitimate* ridge signal — this is an amplitude-only change; the topology gate (`pow(energyAmber,3)`) and the `0.006` off-ridge floor were never touched during that calibration.
+   - **This whole relationship (energyAmber=WHERE, displacement=HOW STRONGLY, off-ridge leak structurally impossible) is now a locked architectural requirement, not just a tuned value.** Do not revert to a linear floor mix. Do not let displacement alone gate visibility again.
+
+### Stage 3 is FROZEN. Locked values:
+| Constant | Value | Location |
+|---|---|---|
+| `GAMMA_CYAN` | 1.9 | `rampEnergy()`, `t>0` branch |
+| `GAMMA_AMBER` | 2.2 | `rampEnergy()`, `t<=0` branch |
+| Amber off-ridge floor | 0.006 | `dispModulated = shapedA * mix(0.006, 1.0, ridgeGateA)` |
+| Amber ridge gate power | `pow(energyAmber, 3.0)` | `ridgeGateA` |
+| `RIDGE_MIN` | **0.045** | additive ridge-minimum term |
+| Cyan `eff` thresholds | `0.03/0.055/0.09/0.16` | `coreColorRamp()`, cyan branch |
+| Amber `eff` thresholds | `0.01/0.025/0.06` | `coreColorRamp()`, amber branch |
+| `bloomThreshold` | 0.83 | `DEFAULT_PARAMS` |
+
+Do not change any of the above without explicit new authorization from the project owner. Do not continue tuning amber independently — it is done unless a future whole-Core change accidentally breaks its topology or relative hierarchy (in which case: diagnose with evidence first, same as this whole pass did, don't guess-and-check).
+
+### Diagnostic infrastructure (preserved, dev-only, default-off — do not remove)
+`uMonoDebug`, `uColorStage1`, `uColorStage2`, `uEffDebug`, `uFinalFrontDebug`, `uGrayTestValue`/`uGrayTestCorrected`, `uAmberEffDebug` (now outputs R=eff, G=energyAmber in one pass — useful for same-instant topology checks), `uTMagDebug`, `uAmberMaskDebug`. All gated behind `window.__jarvis*` flags, zero production behavior change. Reuse these for any future diagnosis rather than adding new ones unless a genuinely new question requires it.
+
+### NEXT VISUAL STAGE — diagnosed but NOT implemented (planning only)
+The next major visual problem is **not** amber — it's the overall visual presentation/readability of the whole Core at normal dashboard scale. Diagnosis (from this session's own production captures, compared against Reference 1's description in the conversation record — the actual Reference 1 image itself was not re-examined pixel-by-pixel in this session, so treat specifics as directional, not exact):
+- At normal dashboard scale the Core reads very dark and visually compressed — individual particle/energy definition that's clearly visible in close-up captures becomes hard to perceive at the size the Core actually renders at in the dashboard.
+- Cyan/violet energized structures, while correctly gated and coherent up close, don't carry enough visual weight at dashboard scale to read as "energized" from a normal viewing distance.
+- Overall the Core currently under-delivers on particle/energy definition relative to Reference 1 at the scale users actually see it.
+- Likely NOT the fix: touching amber (would distort the now-locked hierarchy) or re-opening the colorspace/bloom pipeline (already correctly derived for the current signal).
+- Likely candidates worth investigating with evidence before touching anything: dashboard-scale render size/framing of the Core, `bloomIntensity`/`bloomRadius` (not `bloomThreshold`, which is correctly derived) for overall energy presence, `uFrontBoost`/depth-factor tuning affecting how much of the near surface reads as lit, or particle-level size/density perception at the actual rendered scale (not geometry/count changes, which remain locked) — none of these have been diagnosed yet, this is a hypothesis list for the next pass, not a plan.
+
+**Do not implement any of the above without a fresh evidence-gathering pass and explicit authorization, following the same measure-before-tuning pattern used throughout this document.**
+
+### Files touched this session
+Only `components/JarvisCore3D.tsx` (shader/uniform/param changes described above) and this handoff document. No other component was modified.
+
+---
+
 ## 1. PROJECT VISION
 
 This is not a static visual dashboard. The goal is to build **Karters Dashboard** into a JARVIS-style **AI Command Center**, where:
@@ -417,4 +477,13 @@ Chronological, focused on **why**, not just what — so a "cleaner" reimplementa
 
 # NEXT ACTION FOR CODEX
 
-Read `KARTERS_DASHBOARD_HANDOFF.md` (this file) completely. Inspect the repository directly — do not trust this document's claims without verifying them against actual source. **Do not modify any code yet.** Perform the Phase 8 pre-implementation inspection described in §14. Compare repository reality against this handoff and report any discrepancies you find. Propose a Phase 8 implementation plan per §15's requirements. **Explicitly preserve and account for the still-unfinished dedicated JARVIS Core visual-refinement requirement (§2, §13)** — do not let Phase 8 quietly become a Core redesign, and do not let Phase 8 be approved without addressing where that Core work fits. Then **stop and wait for the project owner's explicit approval** before writing any implementation code.
+**Read §0 first — it is more current than everything below it.** Stage 3 (amber) is now **fully approved and locked** — do not reopen it or re-tune it. The next open item is a **planned-but-not-implemented** whole-Core visual readability pass described at the end of §0.
+
+1. Read this entire document, starting with §0.
+2. Run `git log --oneline -5` and `git status`/`git diff` to establish exactly what's committed (checkpoint `5b94212`) versus any uncommitted changes on top of it — Stage 3 amber may still be sitting uncommitted.
+3. Inspect `components/JarvisCore3D.tsx` directly — do not trust this document's claims about the shader's current state without verifying them against actual source. In particular verify the locked Stage 3 values table in §0 still matches `rampEnergy()`'s amber branch.
+4. **Amber is DONE.** Do not touch `GAMMA_AMBER`, the amber ridge-gate architecture, the `0.006` off-ridge floor, `RIDGE_MIN` (0.045), or the amber thresholds (`0.01/0.025/0.06`) unless a future whole-Core change accidentally breaks its topology (0 off-ridge leak, 100% genuine on-ridge visibility) — if that happens, diagnose with the same same-instant/multi-frame evidence methodology before changing anything.
+5. The next open item is **whole-Core visual readability at normal dashboard scale** (§0's "NEXT VISUAL STAGE" subsection) — the Core currently reads too dark/compressed vs. Reference 1 at the scale it's actually viewed at. This is a **hypothesis list only, nothing has been diagnosed with evidence yet**. Before touching any code: gather fresh diagnostic evidence (reuse the existing dev-gated uniforms where applicable), present findings, and get the project owner's explicit approval on a specific plan before implementing anything.
+6. Do **not** start Phase 8 ("Performance, QA & Final Polish") or the general Phase 8 pre-implementation inspection (§14/§15) unless the project owner explicitly asks for it in this new conversation.
+7. Do not let any of this quietly expand into violet tuning, general color grading, motion/behavior work, or "Thinking Orb" integration — none of that is authorized yet.
+8. As always in this project: **stop and wait for the project owner's explicit approval before writing any implementation code.**
